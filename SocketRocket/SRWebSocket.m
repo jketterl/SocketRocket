@@ -243,6 +243,8 @@ typedef void (^data_callback)(SRWebSocket *webSocket,  NSData *data);
     __strong SRWebSocket *_selfRetain;
     
     NSArray *_requestedProtocols;
+    
+    NSTimer* pingTimeout;
 }
 
 @synthesize delegate = _delegate;
@@ -420,6 +422,7 @@ static __strong NSData *CRLFCRLF;
         if ([self.delegate respondsToSelector:@selector(webSocketDidOpen:)]) {
             [self.delegate webSocketDidOpen:self];
         }
+        [self _setPingTimeout];
     });
 }
 
@@ -610,6 +613,8 @@ static __strong NSData *CRLFCRLF;
     }
     [_outputBuffer appendData:data];
     [self _pumpWriting];
+    
+    [self _setPingTimeout];
 }
 - (void)send:(id)data;
 {
@@ -629,8 +634,28 @@ static __strong NSData *CRLFCRLF;
     });
 }
 
+- (void) _handlePingTimeout {
+    pingTimeout = nil;
+    [self _failWithError:[NSError errorWithDomain:SRWebSocketErrorDomain code:255 userInfo:[NSDictionary dictionaryWithObject:@"ping timeout" forKey:NSLocalizedDescriptionKey]]];
+}
+
+- (void) _cancelPingTimeout {
+    if (pingTimeout == nil) return;
+    [pingTimeout invalidate];
+    pingTimeout = nil;
+}
+
+- (void) _setPingTimeout {
+    [self _cancelPingTimeout];
+    pingTimeout = [NSTimer timerWithTimeInterval:30 target:self selector:@selector(_handlePingTimeout) userInfo:nil repeats:false];
+    // running the timer on the current loop does not work since we are performing blocking operations
+    NSRunLoop* main = [NSRunLoop mainRunLoop];
+    [main addTimer:pingTimeout forMode:NSRunLoopCommonModes];
+}
+
 - (void)handlePing:(NSData *)pingData;
 {
+    [self _setPingTimeout];
     // Need to pingpong this off _callbackQueue first to make sure messages happen in order
     dispatch_async(_callbackQueue, ^{
         dispatch_async(_workQueue, ^{
@@ -996,6 +1021,7 @@ static const uint8_t SRPayloadLenMask   = 0x7F;
                 if ([self.delegate respondsToSelector:@selector(webSocket:didCloseWithCode:reason:wasClean:)]) {
                     [self.delegate webSocket:self didCloseWithCode:_closeCode reason:_closeReason wasClean:YES];
                 }
+                [self _cancelPingTimeout];
             });
         }
         
@@ -1333,6 +1359,7 @@ static const size_t SRFrameHeaderOverhead = 32;
                             if ([self.delegate respondsToSelector:@selector(webSocket:didCloseWithCode:reason:wasClean:)]) {
                                 [self.delegate webSocket:self didCloseWithCode:0 reason:@"Stream end encountered" wasClean:NO];
                             }
+                            [self _cancelPingTimeout];
                         });
                     }
                 }
